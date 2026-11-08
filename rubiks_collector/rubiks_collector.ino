@@ -1,19 +1,19 @@
 /*
   Rubik's Cube Collector Robot  (Arduino Nano + MNBOT Motor driver v1.1)
 
-  Hardware (from photos):
-    - 2 x DC gear motors (left/right wheels) on the MNBOT driver (ZM / BM terminals)
-    - 2 x MG90S servos = left & right gripper arms
-    - 5-channel IR line sensor array (GND, 5V, OUT1..OUT5)
+  Hardware (from photos): 2 DC motors, 2 MG90S gripper servos, 5-channel IR line array.
 
-  Behaviour:
-    1. Follow the line.
-    2. When ALL sensors see black (cube/stop marker) -> stop, close the grippers on the cube.
-    3. Turn around 180 deg, follow the line back.
-    4. At the next all-black marker (drop zone) -> open grippers, back up, stop.
+  How it works:
+    - Follows the black line with PD steering.
+    - JUNCTION (4-5 sensors black): takes the next turn from the current TRIP string
+      ('L','R','S'), and remembers it.
+    - DEAD END (line disappears while not carrying): a cube is there -> close grippers,
+      U-turn, then replays the remembered turns in reverse back to the start.
+    - DROP ZONE: when carrying and the turns are used up (back at the start), the next
+      all-black marker opens the grippers, backs up, U-turns and starts the next TRIP.
 
-  !!! CHECK THE PIN BLOCK BELOW AGAINST YOUR WIRING BEFORE UPLOADING !!!
-  Use TEST_MODE = true first: it prints sensors to Serial and wiggles motors/servos.
+  Edit TRIPS to match your track: one string per cube, turns in the order you meet junctions.
+  Set TEST_MODE = true first to check wiring (sensors print to Serial, motors/servos wiggle).
 */
 
 #include <Servo.h>
@@ -41,6 +41,13 @@ const float   KD               = 18.0;
 const int     SPIN_180_MS      = 650;    // time to spin ~180 deg  (tune!)
 const int     FORWARD_NUDGE_MS = 250;    // creep forward before gripping
 const int     BACKUP_MS        = 500;
+const int     JUNCTION_NUDGE_MS= 220;    // drive forward so the wheels sit on the junction
+const int     TURN_MIN_MS      = 250;    // spin at least this long for 90 deg turns
+const int     DEADEND_MS       = 350;    // line missing this long = dead end / cube
+
+// One entry per cube: turns taken at each junction on the way OUT ('L','R','S'=straight)
+const char* TRIPS[] = { "S", "L", "R" };
+const int   NUM_TRIPS = sizeof(TRIPS) / sizeof(TRIPS[0]);
 
 // Servo angles (tune so the arms don't crush the cube)
 const int L_OPEN = 20,  L_CLOSED = 80;
@@ -48,8 +55,11 @@ const int R_OPEN = 160, R_CLOSED = 100;   // mirrored
 
 Servo servoL, servoR;
 
-enum State { FOLLOW_TO_CUBE, GRAB, TURN_AROUND, FOLLOW_TO_DROP, RELEASE, DONE };
-State state = FOLLOW_TO_CUBE;
+bool carrying = false;
+int  tripIdx = 0, tripPos = 0;
+char history[16];          // turns taken on the way out
+int  histLen = 0;
+unsigned long lostSince = 0;
 
 float lastError = 0;
 
@@ -89,6 +99,7 @@ bool linePosition(float &pos) {
   return true;
 }
 bool allBlack() { return readMask() == 0b11111; }
+int  countOn() { int n = 0; for (int i = 0; i < 5; i++) if (readSensor(i)) n++; return n; }
 
 // One PD line-following step
 void followStep() {
@@ -103,6 +114,21 @@ void followStep() {
   lastError = pos;
   drive(BASE_SPEED + correction, BASE_SPEED - correction);
 }
+
+// ---------------- Turning ----------------
+void spin(int dir, int minMs) {          // dir: -1 = left, +1 = right
+  drive(dir * TURN_SPEED, -dir * TURN_SPEED);
+  delay(minMs);
+  unsigned long t = millis();
+  while (!readSensor(2) && millis() - t < 2500) {}   // until centre sensor finds line
+  stopMotors(); lastError = 0; delay(100);
+}
+void doTurn(char t) {
+  if (t == 'L') spin(-1, TURN_MIN_MS);
+  else if (t == 'R') spin(+1, TURN_MIN_MS);
+  // 'S' = straight: just keep going
+}
+void uTurn() { spin(+1, SPIN_180_MS); }
 
 // ---------------- Test mode ----------------
 void testLoop() {
@@ -133,47 +159,52 @@ void setup() {
   delay(1500);   // time to place the robot on the line
 }
 
+void handleJunction() {
+  stopMotors();
+  if (carrying) {
+    if (histLen == 0) {                         // back at the start: drop zone
+      stopMotors();
+      openGrip();
+      drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS); stopMotors();
+      carrying = false; tripIdx++; tripPos = 0;
+      if (tripIdx >= NUM_TRIPS) { while (true) stopMotors(); }   // all cubes collected
+      uTurn();
+      return;
+    }
+    // replay history backwards, mirrored (L<->R)
+    char t = history[--histLen];
+    t = (t == 'L') ? 'R' : (t == 'R') ? 'L' : 'S';
+    drive(BASE_SPEED, BASE_SPEED); delay(JUNCTION_NUDGE_MS); stopMotors();
+    doTurn(t);
+  } else {
+    char t = TRIPS[tripIdx][tripPos] ? TRIPS[tripIdx][tripPos++] : 'S';
+    if (histLen < (int)sizeof(history)) history[histLen++] = t;
+    drive(BASE_SPEED, BASE_SPEED); delay(JUNCTION_NUDGE_MS); stopMotors();
+    doTurn(t);
+  }
+}
+
 void loop() {
   if (TEST_MODE) { testLoop(); return; }
 
-  switch (state) {
-    case FOLLOW_TO_CUBE:
-      if (allBlack()) { stopMotors(); state = GRAB; }
-      else followStep();
-      break;
+  uint8_t mask = readMask();
 
-    case GRAB:
-      drive(BASE_SPEED, BASE_SPEED); delay(FORWARD_NUDGE_MS);  // center on the cube
+  if (mask == 0) {                              // no line under the robot
+    if (lostSince == 0) lostSince = millis();
+    if (!carrying && millis() - lostSince > DEADEND_MS) {   // dead end = cube here
       stopMotors();
+      drive(BASE_SPEED, BASE_SPEED); delay(FORWARD_NUDGE_MS); stopMotors();
       closeGrip();
-      state = TURN_AROUND;
-      break;
-
-    case TURN_AROUND:
-      drive(-TURN_SPEED, TURN_SPEED); delay(SPIN_180_MS);
-      stopMotors();
-      // keep spinning until the middle sensor re-finds the line
-      while (!readSensor(2)) drive(-TURN_SPEED, TURN_SPEED);
-      stopMotors();
-      lastError = 0;
-      delay(150);
-      state = FOLLOW_TO_DROP;
-      break;
-
-    case FOLLOW_TO_DROP:
-      if (allBlack()) { stopMotors(); state = RELEASE; }
-      else followStep();
-      break;
-
-    case RELEASE:
-      openGrip();
-      drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS);
-      stopMotors();
-      state = DONE;
-      break;
-
-    case DONE:
-      stopMotors();
-      break;
+      carrying = true;
+      uTurn();
+      lostSince = 0;
+      return;
+    }
+    followStep();                               // brief gap: keep searching
+    return;
   }
+  lostSince = 0;
+
+  if (countOn() >= 4) { handleJunction(); return; }
+  followStep();
 }
