@@ -1,19 +1,17 @@
 /*
-  Rubik's Cube Collector Robot  (Arduino Nano + MNBOT Motor driver v1.1)
+  Rubik's Cube Collector Robot - GRID version
+  (Arduino Nano + MNBOT Motor driver v1.1, 2 DC motors, 2 MG90S grippers, 5-ch IR line array)
 
-  Hardware (from photos): 2 DC motors, 2 MG90S gripper servos, 5-channel IR line array.
+  Grid model:
+    - Start/drop cell is (0,0). x grows to the robot's right (East), y grows forward (North)
+      relative to the way the robot faces at start (START_HEADING).
+    - The robot counts intersections as it drives, so it always knows its (x,y) and heading.
+    - For each cube in CUBES[]: drive to its cell, close grippers, drive back to (0,0),
+      open grippers, back up. Then the next cube.
 
-  How it works:
-    - Follows the black line with PD steering.
-    - JUNCTION (4-5 sensors black): takes the next turn from the current TRIP string
-      ('L','R','S'), and remembers it.
-    - DEAD END (line disappears while not carrying): a cube is there -> close grippers,
-      U-turn, then replays the remembered turns in reverse back to the start.
-    - DROP ZONE: when carrying and the turns are used up (back at the start), the next
-      all-black marker opens the grippers, backs up, U-turns and starts the next TRIP.
-
-  Edit TRIPS to match your track: one string per cube, turns in the order you meet junctions.
-  Set TEST_MODE = true first to check wiring (sensors print to Serial, motors/servos wiggle).
+  Place the robot ON the start intersection (0,0), facing along a grid line.
+  Set TEST_MODE = true first to check wiring (sensors print on Serial; motors/servos wiggle).
+  !!! CHECK THE PIN BLOCK AGAINST YOUR WIRING BEFORE UPLOADING !!!
 */
 
 #include <Servo.h>
@@ -23,56 +21,49 @@ const uint8_t PIN_ML_A = 5;   // left motor  pin A (PWM)
 const uint8_t PIN_ML_B = 6;   // left motor  pin B (PWM)
 const uint8_t PIN_MR_A = 9;   // right motor pin A (PWM)
 const uint8_t PIN_MR_B = 10;  // right motor pin B (PWM)
-
-const uint8_t PIN_SERVO_L = 2;  // left gripper servo signal  (yellow wire on D2)
-const uint8_t PIN_SERVO_R = 3;  // right gripper servo signal (yellow wire on D3)
-
-// Sensor OUT1..OUT5, left -> right
-const uint8_t SENSOR_PINS[5] = {A0, A1, A2, A3, A4};
+const uint8_t PIN_SERVO_L = 2;
+const uint8_t PIN_SERVO_R = 3;
+const uint8_t SENSOR_PINS[5] = {A0, A1, A2, A3, A4};   // OUT1..OUT5, left -> right
 // ===========================================================================
 
+// ================= GRID / MISSION CONFIG =================
+// Cube cells {x, y}. (0,0) is the start/drop intersection.
+const int8_t CUBES[][2] = { {1, 2}, {2, 1}, {0, 3} };
+const int NUM_CUBES = sizeof(CUBES) / sizeof(CUBES[0]);
+const bool X_FIRST = true;      // move along x before y
+// ==========================================================
+
 // ---- Tuning ----
-const bool    TEST_MODE        = false;  // true = bench test, robot does not drive on the line
-const bool    LINE_IS_BLACK    = true;   // sensor reads HIGH on black? flip if reversed
-const int     BASE_SPEED       = 140;    // 0..255
-const int     TURN_SPEED       = 150;
-const float   KP               = 28.0;   // steering gain
-const float   KD               = 18.0;
-const int     SPIN_180_MS      = 650;    // time to spin ~180 deg  (tune!)
-const int     FORWARD_NUDGE_MS = 250;    // creep forward before gripping
-const int     BACKUP_MS        = 500;
-const int     JUNCTION_NUDGE_MS= 220;    // drive forward so the wheels sit on the junction
-const int     TURN_MIN_MS      = 250;    // spin at least this long for 90 deg turns
-const int     DEADEND_MS       = 350;    // line missing this long = dead end / cube
+const bool  TEST_MODE        = false;
+const bool  LINE_IS_BLACK    = true;    // flip if the robot runs away from the line
+const int   BASE_SPEED       = 140;
+const int   TURN_SPEED       = 150;
+const float KP = 28.0, KD = 18.0;
+const int   NODE_NUDGE_MS    = 220;     // roll forward so the wheels sit on the intersection
+const int   TURN_MIN_MS      = 250;     // spin time before looking for the new line (90 deg)
+const int   UTURN_MIN_MS     = 600;     // spin time before looking for the line (180 deg)
+const int   NODE_DEBOUNCE_MS = 300;     // ignore intersections right after leaving one
+const int   GRAB_NUDGE_MS    = 200;     // extra creep so the cube is between the arms
+const int   BACKUP_MS        = 450;
 
-// One entry per cube: turns taken at each junction on the way OUT ('L','R','S'=straight)
-const char* TRIPS[] = { "S", "L", "R" };
-const int   NUM_TRIPS = sizeof(TRIPS) / sizeof(TRIPS[0]);
-
-// Servo angles (tune so the arms don't crush the cube)
-const int L_OPEN = 20,  L_CLOSED = 80;
+const int L_OPEN = 20,  L_CLOSED = 80;    // servo angles - tune on the robot
 const int R_OPEN = 160, R_CLOSED = 100;   // mirrored
 
 Servo servoL, servoR;
 
-bool carrying = false;
-int  tripIdx = 0, tripPos = 0;
-char history[16];          // turns taken on the way out
-int  histLen = 0;
-unsigned long lostSince = 0;
-
+// Heading: 0=North(+y) 1=East(+x) 2=South(-y) 3=West(-x)
+const int START_HEADING = 0;
+int heading = START_HEADING;
+int posX = 0, posY = 0;
 float lastError = 0;
 
 // ---------------- Motors ----------------
-void setMotor(uint8_t a, uint8_t b, int speed) {
-  speed = constrain(speed, -255, 255);
-  if (speed >= 0) { analogWrite(a, speed); analogWrite(b, 0); }
-  else            { analogWrite(a, 0);     analogWrite(b, -speed); }
+void setMotor(uint8_t a, uint8_t b, int s) {
+  s = constrain(s, -255, 255);
+  if (s >= 0) { analogWrite(a, s); analogWrite(b, 0); }
+  else        { analogWrite(a, 0); analogWrite(b, -s); }
 }
-void drive(int left, int right) {
-  setMotor(PIN_ML_A, PIN_ML_B, left);
-  setMotor(PIN_MR_A, PIN_MR_B, right);
-}
+void drive(int l, int r) { setMotor(PIN_ML_A, PIN_ML_B, l); setMotor(PIN_MR_A, PIN_MR_B, r); }
 void stopMotors() { drive(0, 0); }
 
 // ---------------- Grippers ----------------
@@ -82,15 +73,11 @@ void closeGrip() { servoL.write(L_CLOSED); servoR.write(R_CLOSED); delay(600); }
 // ---------------- Sensors ----------------
 bool readSensor(int i) {
   bool v = digitalRead(SENSOR_PINS[i]);
-  return LINE_IS_BLACK ? v : !v;   // true = line seen
+  return LINE_IS_BLACK ? v : !v;      // true = line seen
 }
-uint8_t readMask() {
-  uint8_t m = 0;
-  for (int i = 0; i < 5; i++) if (readSensor(i)) m |= (1 << i);
-  return m;
-}
-// weighted position: -4 (far left) .. +4 (far right); returns false if no line
-bool linePosition(float &pos) {
+int countOn() { int n = 0; for (int i = 0; i < 5; i++) if (readSensor(i)) n++; return n; }
+
+bool linePosition(float &pos) {       // -4 (far left) .. +4 (far right)
   static const int w[5] = {-4, -2, 0, 2, 4};
   int sum = 0, n = 0;
   for (int i = 0; i < 5; i++) if (readSensor(i)) { sum += w[i]; n++; }
@@ -98,50 +85,79 @@ bool linePosition(float &pos) {
   pos = (float)sum / n;
   return true;
 }
-bool allBlack() { return readMask() == 0b11111; }
-int  countOn() { int n = 0; for (int i = 0; i < 5; i++) if (readSensor(i)) n++; return n; }
 
-// One PD line-following step
+// Intersection: 4+ sensors, or a T/corner (centre + all sensors on one side)
+bool atIntersection() {
+  if (countOn() >= 4) return true;
+  bool s0 = readSensor(0), s1 = readSensor(1), s2 = readSensor(2),
+       s3 = readSensor(3), s4 = readSensor(4);
+  return (s0 && s1 && s2) || (s2 && s3 && s4);
+}
+
 void followStep() {
   float pos;
-  if (!linePosition(pos)) {
-    // lost line: keep turning toward the side we last saw it
+  if (!linePosition(pos)) {           // lost line: turn toward where we last saw it
     if (lastError < 0) drive(-TURN_SPEED, TURN_SPEED);
     else               drive(TURN_SPEED, -TURN_SPEED);
     return;
   }
-  float correction = KP * pos + KD * (pos - lastError);
+  float c = KP * pos + KD * (pos - lastError);
   lastError = pos;
-  drive(BASE_SPEED + correction, BASE_SPEED - correction);
+  drive(BASE_SPEED + c, BASE_SPEED - c);
 }
 
 // ---------------- Turning ----------------
-void spin(int dir, int minMs) {          // dir: -1 = left, +1 = right
+void spin(int dir, int minMs) {       // dir: -1 left, +1 right
   drive(dir * TURN_SPEED, -dir * TURN_SPEED);
   delay(minMs);
   unsigned long t = millis();
-  while (!readSensor(2) && millis() - t < 2500) {}   // until centre sensor finds line
+  while (!readSensor(2) && millis() - t < 2500) {}
   stopMotors(); lastError = 0; delay(100);
 }
-void doTurn(char t) {
-  if (t == 'L') spin(-1, TURN_MIN_MS);
-  else if (t == 'R') spin(+1, TURN_MIN_MS);
-  // 'S' = straight: just keep going
+
+void turnTo(int want) {
+  int diff = (want - heading + 4) % 4;      // 0 straight, 1 right, 2 back, 3 left
+  if (diff == 1)      spin(+1, TURN_MIN_MS);
+  else if (diff == 3) spin(-1, TURN_MIN_MS);
+  else if (diff == 2) spin(+1, UTURN_MIN_MS);
+  heading = want;
 }
-void uTurn() { spin(+1, SPIN_180_MS); }
+
+// ---------------- Grid movement ----------------
+// Follow the line until the next intersection, center on it, update position.
+void driveToNextNode() {
+  unsigned long start = millis();
+  while (true) {
+    if (millis() - start > NODE_DEBOUNCE_MS && atIntersection()) break;
+    followStep();
+  }
+  drive(BASE_SPEED, BASE_SPEED); delay(NODE_NUDGE_MS); stopMotors();
+  if (heading == 0) posY++;
+  else if (heading == 1) posX++;
+  else if (heading == 2) posY--;
+  else posX--;
+}
+
+void navigateTo(int tx, int ty) {
+  while (posX != tx || posY != ty) {
+    bool moveX = (posX != tx) && (X_FIRST || posY == ty);
+    if (!moveX && posY == ty) moveX = true;
+    int want = moveX ? (tx > posX ? 1 : 3) : (ty > posY ? 0 : 2);
+    turnTo(want);
+    driveToNextNode();
+  }
+}
 
 // ---------------- Test mode ----------------
 void testLoop() {
-  Serial.print("sensors L->R: ");
   for (int i = 0; i < 5; i++) Serial.print(readSensor(i) ? '#' : '.');
-  Serial.println();
-
+  Serial.println(atIntersection() ? "  <- intersection" : "");
   static unsigned long t = 0;
   if (millis() - t > 3000) {
     t = millis();
-    Serial.println("test: left fwd");  drive(150, 0);  delay(500); stopMotors();
-    Serial.println("test: right fwd"); drive(0, 150);  delay(500); stopMotors();
-    Serial.println("test: grippers");  openGrip(); closeGrip(); openGrip();
+    drive(150, 0); delay(500); stopMotors();
+    drive(0, 150); delay(500); stopMotors();
+    openGrip(); closeGrip(); openGrip();
   }
   delay(100);
 }
@@ -156,55 +172,21 @@ void setup() {
   servoR.attach(PIN_SERVO_R);
   openGrip();
   stopMotors();
-  delay(1500);   // time to place the robot on the line
-}
-
-void handleJunction() {
-  stopMotors();
-  if (carrying) {
-    if (histLen == 0) {                         // back at the start: drop zone
-      stopMotors();
-      openGrip();
-      drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS); stopMotors();
-      carrying = false; tripIdx++; tripPos = 0;
-      if (tripIdx >= NUM_TRIPS) { while (true) stopMotors(); }   // all cubes collected
-      uTurn();
-      return;
-    }
-    // replay history backwards, mirrored (L<->R)
-    char t = history[--histLen];
-    t = (t == 'L') ? 'R' : (t == 'R') ? 'L' : 'S';
-    drive(BASE_SPEED, BASE_SPEED); delay(JUNCTION_NUDGE_MS); stopMotors();
-    doTurn(t);
-  } else {
-    char t = TRIPS[tripIdx][tripPos] ? TRIPS[tripIdx][tripPos++] : 'S';
-    if (histLen < (int)sizeof(history)) history[histLen++] = t;
-    drive(BASE_SPEED, BASE_SPEED); delay(JUNCTION_NUDGE_MS); stopMotors();
-    doTurn(t);
-  }
+  delay(2000);                        // place the robot on the start intersection
 }
 
 void loop() {
   if (TEST_MODE) { testLoop(); return; }
 
-  uint8_t mask = readMask();
+  for (int i = 0; i < NUM_CUBES; i++) {
+    navigateTo(CUBES[i][0], CUBES[i][1]);
+    drive(BASE_SPEED, BASE_SPEED); delay(GRAB_NUDGE_MS); stopMotors();
+    closeGrip();                                   // pick up the cube
 
-  if (mask == 0) {                              // no line under the robot
-    if (lostSince == 0) lostSince = millis();
-    if (!carrying && millis() - lostSince > DEADEND_MS) {   // dead end = cube here
-      stopMotors();
-      drive(BASE_SPEED, BASE_SPEED); delay(FORWARD_NUDGE_MS); stopMotors();
-      closeGrip();
-      carrying = true;
-      uTurn();
-      lostSince = 0;
-      return;
-    }
-    followStep();                               // brief gap: keep searching
-    return;
+    navigateTo(0, 0);
+    openGrip();                                    // drop it at the start
+    drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS); stopMotors();
   }
-  lostSince = 0;
-
-  if (countOn() >= 4) { handleJunction(); return; }
-  followStep();
+  turnTo(START_HEADING);
+  while (true) stopMotors();                       // done
 }
