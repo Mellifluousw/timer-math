@@ -1,13 +1,14 @@
 /*
   Rubik's Cube Collector Robot - GRID version
-  (Arduino Nano + MNBOT Motor driver v1.1, 2 DC motors, 2 MG90S grippers, 5-ch IR line array)
+  (Arduino Nano + MNBOT Motor driver v1.1, 2 DC motors, 5-ch IR line array)
 
   Grid model:
     - Start/drop cell is (0,0). x grows to the robot's right (East), y grows forward (North)
       relative to the way the robot faces at start (START_HEADING).
     - The robot counts intersections as it drives, so it always knows its (x,y) and heading.
-    - For each cube in CUBES[]: drive to its cell, close grippers, drive back to (0,0),
-      open grippers, back up. Then the next cube.
+    - The cube is carried BETWEEN THE FIXED ARMS (the yellow U-shaped body). No gripper moves.
+    - For each cube in CUBES[]: drive into its cell so the cube slides into the U, turn
+      around gently, drive back to (0,0), then back up so the cube stays at the drop cell.
 
   Place the robot ON the start intersection (0,0), facing along a grid line.
   Set TEST_MODE = true first to check wiring (sensors print on Serial; motors/servos wiggle).
@@ -21,7 +22,7 @@ const uint8_t PIN_ML_A = 5;   // left motor  pin A (PWM)
 const uint8_t PIN_ML_B = 6;   // left motor  pin B (PWM)
 const uint8_t PIN_MR_A = 9;   // right motor pin A (PWM)
 const uint8_t PIN_MR_B = 10;  // right motor pin B (PWM)
-const uint8_t PIN_SERVO_L = 2;
+const uint8_t PIN_SERVO_L = 2;   // only used if USE_SERVOS = true
 const uint8_t PIN_SERVO_R = 3;
 const uint8_t SENSOR_PINS[5] = {A0, A1, A2, A3, A4};   // OUT1..OUT5, left -> right
 // ===========================================================================
@@ -35,6 +36,7 @@ const bool X_FIRST = true;      // move along x before y
 
 // ---- Tuning ----
 const bool  TEST_MODE        = false;
+const bool  USE_SERVOS       = false;   // arms are fixed; leave false (servos stay unused)
 const bool  LINE_IS_BLACK    = true;    // flip if the robot runs away from the line
 const int   BASE_SPEED       = 140;
 const int   TURN_SPEED       = 150;
@@ -43,7 +45,8 @@ const int   NODE_NUDGE_MS    = 220;     // roll forward so the wheels sit on the
 const int   TURN_MIN_MS      = 250;     // spin time before looking for the new line (90 deg)
 const int   UTURN_MIN_MS     = 600;     // spin time before looking for the line (180 deg)
 const int   NODE_DEBOUNCE_MS = 300;     // ignore intersections right after leaving one
-const int   GRAB_NUDGE_MS    = 200;     // extra creep so the cube is between the arms
+const int   GRAB_NUDGE_MS    = 200;     // extra creep so the cube is fully inside the U
+const int   CARRY_TURN_SPEED = 110;     // gentler spin while carrying so the cube stays in
 const int   BACKUP_MS        = 450;
 
 const int L_OPEN = 20,  L_CLOSED = 80;    // servo angles - tune on the robot
@@ -67,8 +70,8 @@ void drive(int l, int r) { setMotor(PIN_ML_A, PIN_ML_B, l); setMotor(PIN_MR_A, P
 void stopMotors() { drive(0, 0); }
 
 // ---------------- Grippers ----------------
-void openGrip()  { servoL.write(L_OPEN);   servoR.write(R_OPEN);   delay(500); }
-void closeGrip() { servoL.write(L_CLOSED); servoR.write(R_CLOSED); delay(600); }
+void openGrip()  { if (USE_SERVOS) { servoL.write(L_OPEN);   servoR.write(R_OPEN);   delay(500); } }
+void closeGrip() { if (USE_SERVOS) { servoL.write(L_CLOSED); servoR.write(R_CLOSED); delay(600); } }
 
 // ---------------- Sensors ----------------
 bool readSensor(int i) {
@@ -107,8 +110,10 @@ void followStep() {
 }
 
 // ---------------- Turning ----------------
+bool carrying = false;
 void spin(int dir, int minMs) {       // dir: -1 left, +1 right
-  drive(dir * TURN_SPEED, -dir * TURN_SPEED);
+  int sp = carrying ? CARRY_TURN_SPEED : TURN_SPEED;
+  drive(dir * sp, -dir * sp);
   delay(minMs);
   unsigned long t = millis();
   while (!readSensor(2) && millis() - t < 2500) {}
@@ -168,8 +173,7 @@ void setup() {
   for (int i = 0; i < 5; i++) pinMode(SENSOR_PINS[i], INPUT);
   pinMode(PIN_ML_A, OUTPUT); pinMode(PIN_ML_B, OUTPUT);
   pinMode(PIN_MR_A, OUTPUT); pinMode(PIN_MR_B, OUTPUT);
-  servoL.attach(PIN_SERVO_L);
-  servoR.attach(PIN_SERVO_R);
+  if (USE_SERVOS) { servoL.attach(PIN_SERVO_L); servoR.attach(PIN_SERVO_R); }
   openGrip();
   stopMotors();
   delay(2000);                        // place the robot on the start intersection
@@ -181,11 +185,11 @@ void loop() {
   for (int i = 0; i < NUM_CUBES; i++) {
     navigateTo(CUBES[i][0], CUBES[i][1]);
     drive(BASE_SPEED, BASE_SPEED); delay(GRAB_NUDGE_MS); stopMotors();
-    closeGrip();                                   // pick up the cube
+    carrying = true;                               // cube is now inside the U
 
     navigateTo(0, 0);
-    openGrip();                                    // drop it at the start
-    drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS); stopMotors();
+    carrying = false;                              // reversing out leaves the cube behind
+    drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS); stopMotors();   // cube stays at (0,0)
   }
   turnTo(START_HEADING);
   while (true) stopMotors();                       // done
