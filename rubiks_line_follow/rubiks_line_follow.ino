@@ -30,7 +30,8 @@ const int   TURN_MS     = 450;      // minimum arc time for 90 deg (tune!)
 const int   UTURN_MS    = 600;      // in-place spin time for 180 deg (tune!)
 const int   UTURN_SPEED = 130;      // in-place spin speed
 const int   DEBOUNCE_MS = 300;      // ignore intersections right after one
-const int   DEADEND_MS  = 400;      // no line this long = dead end -> U-turn
+const int   DEADEND_MS  = 400;      // no line this long = dead end -> turn DEADEND_TURN
+const char  DEADEND_TURN = 'L';     // at a dead end turn Left or Right (left-hand rule = 'L')
 
 int   planPos = 0;
 float lastPos = 0;
@@ -94,7 +95,7 @@ void loop() {
   // dead end: line gone for a while -> turn around
   if (countOn() == 0) {
     if (!lostSince) lostSince = millis();
-    if (millis() - lostSince > DEADEND_MS) { uTurn(UTURN_MS); lostSince = 0; return; }
+    if (millis() - lostSince > DEADEND_MS) { spin(DEADEND_TURN == 'L' ? -1 : +1, TURN_MS); lostSince = 0; return; }
   } else lostSince = 0;
 
   if (millis() - lastNode > DEBOUNCE_MS && intersection()) {

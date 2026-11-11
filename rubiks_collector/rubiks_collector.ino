@@ -55,7 +55,8 @@ const int   NODE_DEBOUNCE_MS = 300;     // ignore intersections right after leav
 const int   GRAB_NUDGE_MS    = 200;     // extra creep so the cube is fully inside the U
 const int   CARRY_TURN_FAST  = 110;     // gentler turns while carrying so the cube stays in
 const int   BACKUP_MS        = 450;
-const int   DEADEND_MS       = 400;     // no line this long = dead end -> U-turn back
+const int   DEADEND_MS       = 400;     // no line this long = dead end -> turn DEADEND_TURN
+const char  DEADEND_TURN     = 'L';     // at a dead end turn Left or Right (left-hand rule = 'L')
 
 const int L_OPEN = 20,  L_CLOSED = 80;    // servo angles - tune on the robot
 const int R_OPEN = 160, R_CLOSED = 100;   // mirrored
@@ -156,8 +157,8 @@ void driveToNextNode() {
     if (millis() - start > NODE_DEBOUNCE_MS && atIntersection()) break;
     if (countOn() == 0) {                       // no line under the robot
       if (!lostSince) lostSince = millis();
-      if (millis() - lostSince > DEADEND_MS) {  // dead end: U-turn in place, go back
-        uTurn(UTURN_MIN_MS);
+      if (millis() - lostSince > DEADEND_MS) {  // dead end: arc left/right until a line is found
+        spin(DEADEND_TURN == 'L' ? -1 : +1, TURN_MIN_MS);   // past the grid edge this swings back onto the line
         heading = (heading + 2) % 4;
         lostSince = 0;
         start = millis();
