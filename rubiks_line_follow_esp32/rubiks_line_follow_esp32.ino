@@ -28,11 +28,12 @@ const char PLAN[] = "SSLSRSX";
 // ===== TUNING =====
 const bool  LINE_IS_BLACK = true;   // flip if robot runs away from the line
 const int   SPEED       = 130;      // 0..255 (go slower so cubes don't get knocked out)
-const int   TURN_SPEED  = 120;
+const int   TURN_FAST   = 130;      // turns: outer motor speed
+const int   TURN_SLOW   = 20;       // turns: inner motor speed (0 = pivot on one wheel, no reverse)
 const float KP = 28.0, KD = 18.0;
 const int   NUDGE_MS    = 220;      // roll onto the intersection before turning
-const int   TURN_MS     = 250;      // minimum spin time for 90 deg
-const int   UTURN_MS    = 600;      // minimum spin time for 180 deg
+const int   TURN_MS     = 450;      // minimum arc time for 90 deg (tune!)
+const int   UTURN_MS    = 1000;     // minimum arc time for 180 deg (tune!)
 const int   DEBOUNCE_MS = 300;      // ignore intersections right after one
 const int   DEADEND_MS  = 400;      // no line this long = dead end -> U-turn
 
@@ -63,8 +64,10 @@ bool intersection() {
   return countOn() >= 4 || (on(0) && on(1) && on(2)) || (on(2) && on(3) && on(4));
 }
 
+// Turn WITHOUT rotating in place: one motor slower, the other faster (both go forward).
 void spin(int dir, int minMs) {              // -1 left, +1 right
-  drive(dir * TURN_SPEED, -dir * TURN_SPEED);
+  if (dir < 0) drive(TURN_SLOW, TURN_FAST);  // left turn: left motor slower
+  else         drive(TURN_FAST, TURN_SLOW);  // right turn: right motor slower
   delay(minMs);
   unsigned long t = millis();
   while (!on(2) && millis() - t < 2500) {}   // until centre sensor finds the new line
@@ -76,7 +79,7 @@ void followLine() {
   int sum = 0, n = 0;
   for (int i = 0; i < 5; i++) if (on(i)) { sum += w[i]; n++; }
   if (n == 0) {                              // lost the line: search toward last side
-    if (lastPos < 0) drive(-TURN_SPEED, TURN_SPEED); else drive(TURN_SPEED, -TURN_SPEED);
+    if (lastPos < 0) drive(TURN_SLOW, TURN_FAST); else drive(TURN_FAST, TURN_SLOW);
     return;
   }
   float pos = (float)sum / n;
