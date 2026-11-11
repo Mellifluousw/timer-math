@@ -49,7 +49,8 @@ const int   TURN_SLOW        = 20;      // turns: inner motor speed (0 = pivot o
 const float KP = 28.0, KD = 18.0;
 const int   NODE_NUDGE_MS    = 220;     // roll forward so the wheels sit on the intersection
 const int   TURN_MIN_MS      = 450;     // arc time before looking for the new line (90 deg) - tune
-const int   UTURN_MIN_MS     = 1000;    // arc time before looking for the line (180 deg) - tune
+const int   UTURN_MIN_MS     = 600;     // in-place spin time for 180 deg - tune
+const int   UTURN_SPEED      = 130;     // in-place spin speed (lowered automatically while carrying)
 const int   NODE_DEBOUNCE_MS = 300;     // ignore intersections right after leaving one
 const int   GRAB_NUDGE_MS    = 200;     // extra creep so the cube is fully inside the U
 const int   CARRY_TURN_FAST  = 110;     // gentler turns while carrying so the cube stays in
@@ -128,11 +129,21 @@ void spin(int dir, int minMs) {       // dir: -1 left, +1 right
   stopMotors(); lastError = 0; delay(100);
 }
 
+// U-turn: rotate IN PLACE (one wheel forward, the other backward).
+void uTurn(int minMs) {
+  int sp = carrying ? CARRY_TURN_FAST : UTURN_SPEED;
+  drive(sp, -sp);
+  delay(minMs);
+  unsigned long t = millis();
+  while (!readSensor(2) && millis() - t < 2500) {}   // until the centre sensor finds the line
+  stopMotors(); lastError = 0; delay(100);
+}
+
 void turnTo(int want) {
   int diff = (want - heading + 4) % 4;      // 0 straight, 1 right, 2 back, 3 left
   if (diff == 1)      spin(+1, TURN_MIN_MS);
   else if (diff == 3) spin(-1, TURN_MIN_MS);
-  else if (diff == 2) spin(+1, UTURN_MIN_MS);
+  else if (diff == 2) uTurn(UTURN_MIN_MS);
   heading = want;
 }
 

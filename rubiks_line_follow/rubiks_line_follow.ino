@@ -27,7 +27,8 @@ const int   TURN_SLOW   = 20;       // turns: inner motor speed (0 = pivot on on
 const float KP = 28.0, KD = 18.0;
 const int   NUDGE_MS    = 220;      // roll onto the intersection before turning
 const int   TURN_MS     = 450;      // minimum arc time for 90 deg (tune!)
-const int   UTURN_MS    = 1000;     // minimum arc time for 180 deg (tune!)
+const int   UTURN_MS    = 600;      // in-place spin time for 180 deg (tune!)
+const int   UTURN_SPEED = 130;      // in-place spin speed
 const int   DEBOUNCE_MS = 300;      // ignore intersections right after one
 const int   DEADEND_MS  = 400;      // no line this long = dead end -> U-turn
 
@@ -58,6 +59,15 @@ void spin(int dir, int minMs) {              // -1 left, +1 right
   drive(0, 0); lastPos = 0; delay(100);
 }
 
+// U-turn: rotate IN PLACE (one wheel forward, the other backward).
+void uTurn(int minMs) {
+  drive(UTURN_SPEED, -UTURN_SPEED);
+  delay(minMs);
+  unsigned long t = millis();
+  while (!on(2) && millis() - t < 2500) {}   // until the centre sensor finds the line
+  drive(0, 0); lastPos = 0; delay(100);
+}
+
 void followLine() {
   static const int w[5] = {-4, -2, 0, 2, 4};
   int sum = 0, n = 0;
@@ -84,7 +94,7 @@ void loop() {
   // dead end: line gone for a while -> turn around
   if (countOn() == 0) {
     if (!lostSince) lostSince = millis();
-    if (millis() - lostSince > DEADEND_MS) { spin(+1, UTURN_MS); lostSince = 0; return; }
+    if (millis() - lostSince > DEADEND_MS) { uTurn(UTURN_MS); lostSince = 0; return; }
   } else lostSince = 0;
 
   if (millis() - lastNode > DEBOUNCE_MS && intersection()) {
@@ -94,7 +104,7 @@ void loop() {
     planPos++;
     if (m == 'L') spin(-1, TURN_MS);
     else if (m == 'R') spin(+1, TURN_MS);
-    else if (m == 'U') spin(+1, UTURN_MS);
+    else if (m == 'U') uTurn(UTURN_MS);
     lastNode = millis();
     return;
   }
