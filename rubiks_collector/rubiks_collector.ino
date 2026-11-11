@@ -44,14 +44,15 @@ const bool  TEST_MODE        = false;
 const bool  USE_SERVOS       = false;   // arms are fixed; leave false (servos stay unused)
 const bool  LINE_IS_BLACK    = true;    // flip if the robot runs away from the line
 const int   BASE_SPEED       = 140;
-const int   TURN_SPEED       = 150;
+const int   TURN_FAST        = 140;     // turns: outer motor speed
+const int   TURN_SLOW        = 20;      // turns: inner motor speed (0 = pivot on one wheel)
 const float KP = 28.0, KD = 18.0;
 const int   NODE_NUDGE_MS    = 220;     // roll forward so the wheels sit on the intersection
-const int   TURN_MIN_MS      = 250;     // spin time before looking for the new line (90 deg)
-const int   UTURN_MIN_MS     = 600;     // spin time before looking for the line (180 deg)
+const int   TURN_MIN_MS      = 450;     // arc time before looking for the new line (90 deg) - tune
+const int   UTURN_MIN_MS     = 1000;    // arc time before looking for the line (180 deg) - tune
 const int   NODE_DEBOUNCE_MS = 300;     // ignore intersections right after leaving one
 const int   GRAB_NUDGE_MS    = 200;     // extra creep so the cube is fully inside the U
-const int   CARRY_TURN_SPEED = 110;     // gentler spin while carrying so the cube stays in
+const int   CARRY_TURN_FAST  = 110;     // gentler turns while carrying so the cube stays in
 const int   BACKUP_MS        = 450;
 
 const int L_OPEN = 20,  L_CLOSED = 80;    // servo angles - tune on the robot
@@ -105,8 +106,8 @@ bool atIntersection() {
 void followStep() {
   float pos;
   if (!linePosition(pos)) {           // lost line: turn toward where we last saw it
-    if (lastError < 0) drive(-TURN_SPEED, TURN_SPEED);
-    else               drive(TURN_SPEED, -TURN_SPEED);
+    if (lastError < 0) drive(TURN_SLOW, TURN_FAST);
+    else               drive(TURN_FAST, TURN_SLOW);
     return;
   }
   float c = KP * pos + KD * (pos - lastError);
@@ -116,9 +117,11 @@ void followStep() {
 
 // ---------------- Turning ----------------
 bool carrying = false;
+// Turn WITHOUT rotating in place: one motor slower, the other faster (both go forward).
 void spin(int dir, int minMs) {       // dir: -1 left, +1 right
-  int sp = carrying ? CARRY_TURN_SPEED : TURN_SPEED;
-  drive(dir * sp, -dir * sp);
+  int fast = carrying ? CARRY_TURN_FAST : TURN_FAST;
+  if (dir < 0) drive(TURN_SLOW, fast);   // left turn: left motor slower
+  else         drive(fast, TURN_SLOW);   // right turn: right motor slower
   delay(minMs);
   unsigned long t = millis();
   while (!readSensor(2) && millis() - t < 2500) {}
