@@ -7,8 +7,9 @@
       relative to the way the robot faces at start (START_HEADING).
     - The robot counts intersections as it drives, so it always knows its (x,y) and heading.
     - The cube is carried BETWEEN THE FIXED ARMS (the yellow U-shaped body). No gripper moves.
-    - For each cube in CUBES[]: drive into its cell so the cube slides into the U, turn
-      around gently, drive back to (0,0), then back up so the cube stays at the drop cell.
+    - For each of the 3 cubes in CUBES[]: drive into its cell so the cube slides into the U,
+      turn around gently, drive to the DROP cell, then back up so the cube stays there.
+      After all cubes are done, every cube is gathered in the one DROP cell.
 
   Place the robot ON the start intersection (0,0), facing along a grid line.
   Set TEST_MODE = true first to check wiring (sensors print on Serial; motors/servos wiggle).
@@ -31,7 +32,11 @@ const uint8_t SENSOR_PINS[5] = {A0, A1, A2, A3, A4};   // OUT1..OUT5, left -> ri
 // Cube cells {x, y}. (0,0) is the start/drop intersection.
 const int8_t CUBES[][2] = { {1, 2}, {2, 1}, {0, 3} };
 const int NUM_CUBES = sizeof(CUBES) / sizeof(CUBES[0]);
+// Where ALL cubes get gathered. Default = the start cell. Any cell works.
+const int8_t DROP_X = 0, DROP_Y = 0;
 const bool X_FIRST = true;      // move along x before y
+// Grid size is NOT needed: the robot only counts intersections to each cube.
+// To fill CUBES: count intersections from the start. 1 right + 2 forward => {1, 2}.
 // ==========================================================
 
 // ---- Tuning ----
@@ -187,9 +192,9 @@ void loop() {
     drive(BASE_SPEED, BASE_SPEED); delay(GRAB_NUDGE_MS); stopMotors();
     carrying = true;                               // cube is now inside the U
 
-    navigateTo(0, 0);
+    navigateTo(DROP_X, DROP_Y);
     carrying = false;                              // reversing out leaves the cube behind
-    drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS); stopMotors();   // cube stays at (0,0)
+    drive(-BASE_SPEED, -BASE_SPEED); delay(BACKUP_MS); stopMotors();   // cube stays in the drop cell
   }
   turnTo(START_HEADING);
   while (true) stopMotors();                       // done
